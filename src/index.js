@@ -21,7 +21,17 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || 'localhost';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin';
 
-await mongoose.connect(process.env.MONGODB_URI);
+// MongoDB connection
+try {
+  await mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  console.log('MongoDB connected');
+} catch (err) {
+  console.error('MongoDB connection error:', err);
+  process.exit(1);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -29,6 +39,7 @@ const io = new IOServer(server, {
   cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true }
 });
 
+// Middlewares
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(express.json());
@@ -36,33 +47,48 @@ app.use(cookieParser());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 300 }));
 
+// UID cookie
 app.use((req, res, next) => {
   if (!req.cookies?.uid) {
     const uid = uuidv4();
     res.cookie('uid', uid, {
-      httpOnly: true, sameSite: 'lax', secure: false, domain: COOKIE_DOMAIN, maxAge: 1000*60*60*24*365
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      domain: COOKIE_DOMAIN,
+      maxAge: 1000 * 60 * 60 * 24 * 365
     });
     req.cookies = { ...req.cookies, uid };
   }
   next();
 });
 
-io.on('connection', (socket) => {});
+// Socket.io
+io.on('connection', (socket) => {
+  console.log('New socket connected:', socket.id);
+});
 
+// Helper: top today
 async function topToday(limit = 50) {
   const day = dhakaStamp();
   return Score.find({ day }).sort({ points: -1, createdAt: 1 }).limit(limit).lean();
 }
 
+// Routes
 app.post('/api/session', async (req, res) => {
   try {
     const { nickname } = req.body || {};
     const uid = req.cookies.uid;
     let user = await User.findOne({ uid });
     if (!user) user = await User.create({ uid, nickname: nickname || 'Guest' });
-    else if (nickname && nickname.trim()) { user.nickname = nickname.trim().slice(0, 20); await user.save(); }
+    else if (nickname && nickname.trim()) {
+      user.nickname = nickname.trim().slice(0, 20);
+      await user.save();
+    }
     return res.json({ ok: true, user: { uid: user.uid, nickname: user.nickname } });
-  } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.post('/api/game/start', async (req, res) => {
@@ -72,18 +98,23 @@ app.post('/api/game/start', async (req, res) => {
     if (!user) return res.status(400).json({ ok: false, error: 'No session' });
     const token = jwt.sign({ uid }, JWT_SECRET, { expiresIn: '130s' });
     return res.json({ ok: true, token, expiresIn: 130 });
-  } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.post('/api/game/submit', async (req, res) => {
   try {
     const { token, score } = req.body || {};
     if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
+    
     let payload;
     try { payload = jwt.verify(token, JWT_SECRET); }
     catch { return res.status(401).json({ ok: false, error: 'Token invalid/expired' }); }
+    
     const uidFromCookie = req.cookies.uid;
     if (payload.uid !== uidFromCookie) return res.status(403).json({ ok: false, error: 'Session mismatch' });
+    
     const user = await User.findOne({ uid: payload.uid });
     if (!user) return res.status(400).json({ ok: false, error: 'No user' });
 
@@ -96,8 +127,11 @@ app.post('/api/game/submit', async (req, res) => {
 
     const board = await topToday(50);
     io.emit('leaderboard:today', board);
+
     return res.json({ ok: true, saved: true });
-  } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/api/leaderboard/today', async (_req, res) => {
@@ -125,4 +159,7 @@ app.post('/api/admin/close-day', async (req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-server.listen(PORT, () => { console.log(`Server listening on http://localhost:${PORT}`); });
+// Render-ready listen
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on port ${PORT}`);
+});
