@@ -16,9 +16,9 @@ import Winner from './models/Winner.js';
 import { dhakaStamp, dhakaNow } from './utils/dhaka.js';
 
 const PORT = process.env.PORT || 4000;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'https://candy-crush-zeta-nine.vercel.app';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || '.vercel.app'; // cross-origin support
+const COOKIE_DOMAIN = process.env.NODE_ENV === 'production' ? '.vercel.app' : 'localhost';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin';
 
 // MongoDB connection
@@ -37,10 +37,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new IOServer(server, {
   cors: {
-    origin: (origin, callback) => {
-      if (!origin || origin === CORS_ORIGIN) callback(null, true);
-      else callback(new Error('Not allowed by CORS'));
-    },
+    origin: CORS_ORIGIN,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -52,10 +49,7 @@ app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || origin === CORS_ORIGIN) callback(null, true);
-    else callback(new Error('Not allowed by CORS'));
-  },
+  origin: CORS_ORIGIN,
   credentials: true
 }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 300 }));
@@ -107,8 +101,11 @@ app.post('/api/session', async (req, res) => {
 app.post('/api/game/start', async (req, res) => {
   try {
     const uid = req.cookies.uid;
+    if (!uid) return res.status(400).json({ ok: false, error: 'No UID cookie' });
+
     const user = await User.findOne({ uid });
     if (!user) return res.status(400).json({ ok: false, error: 'No session' });
+
     const token = jwt.sign({ uid }, JWT_SECRET, { expiresIn: '130s' });
     return res.json({ ok: true, token, expiresIn: 130 });
   } catch (e) {
@@ -120,14 +117,14 @@ app.post('/api/game/submit', async (req, res) => {
   try {
     const { token, score } = req.body || {};
     if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
-    
+
     let payload;
     try { payload = jwt.verify(token, JWT_SECRET); }
     catch { return res.status(401).json({ ok: false, error: 'Token invalid/expired' }); }
-    
+
     const uidFromCookie = req.cookies.uid;
     if (payload.uid !== uidFromCookie) return res.status(403).json({ ok: false, error: 'Session mismatch' });
-    
+
     const user = await User.findOne({ uid: payload.uid });
     if (!user) return res.status(400).json({ ok: false, error: 'No user' });
 
