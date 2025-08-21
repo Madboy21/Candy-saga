@@ -18,7 +18,7 @@ import { dhakaStamp, dhakaNow } from './utils/dhaka.js';
 const PORT = process.env.PORT || 4000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || 'localhost';
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || '.vercel.app'; // cross-origin support
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin';
 
 // MongoDB connection
@@ -36,7 +36,14 @@ try {
 const app = express();
 const server = http.createServer(app);
 const io = new IOServer(server, {
-  cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true }
+  cors: {
+    origin: (origin, callback) => {
+      if (!origin || origin === CORS_ORIGIN) callback(null, true);
+      else callback(new Error('Not allowed by CORS'));
+    },
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
 });
 
 // Middlewares
@@ -44,7 +51,13 @@ app.set('trust proxy', 1);
 app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || origin === CORS_ORIGIN) callback(null, true);
+    else callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 300 }));
 
 // UID cookie
@@ -53,7 +66,7 @@ app.use((req, res, next) => {
     const uid = uuidv4();
     res.cookie('uid', uid, {
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: 'none',  // cross-origin
       secure: process.env.NODE_ENV === 'production',
       domain: COOKIE_DOMAIN,
       maxAge: 1000 * 60 * 60 * 24 * 365
