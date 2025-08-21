@@ -1,4 +1,3 @@
-// index.js
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -37,30 +36,31 @@ app.use(cookieParser());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 300 }));
 
-// assign uid cookie if missing
+// Ensure UID cookie
 app.use((req, res, next) => {
   if (!req.cookies?.uid) {
     const uid = uuidv4();
     res.cookie('uid', uid, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: false,
+      secure: process.env.NODE_ENV === 'production',
       domain: COOKIE_DOMAIN,
-      maxAge: 1000*60*60*24*365
+      maxAge: 1000 * 60 * 60 * 24 * 365
     });
     req.cookies = { ...req.cookies, uid };
   }
   next();
 });
 
-io.on('connection', socket => {});
+io.on('connection', (socket) => {});
 
+// Helper: get top leaderboard
 async function topToday(limit = 50) {
   const day = dhakaStamp();
   return Score.find({ day }).sort({ points: -1, createdAt: 1 }).limit(limit).lean();
 }
 
-// session creation
+// Session
 app.post('/api/session', async (req, res) => {
   try {
     const { nickname } = req.body || {};
@@ -72,7 +72,7 @@ app.post('/api/session', async (req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// start game
+// Start game
 app.post('/api/game/start', async (req, res) => {
   try {
     const uid = req.cookies.uid;
@@ -83,14 +83,13 @@ app.post('/api/game/start', async (req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// submit score
+// Submit score
 app.post('/api/game/submit', async (req, res) => {
   try {
     const { token, score } = req.body || {};
     if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
     let payload;
-    try { payload = jwt.verify(token, JWT_SECRET); }
-    catch { return res.status(401).json({ ok: false, error: 'Token invalid/expired' }); }
+    try { payload = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({ ok: false, error: 'Token invalid/expired' }); }
 
     const uidFromCookie = req.cookies.uid;
     if (payload.uid !== uidFromCookie) return res.status(403).json({ ok: false, error: 'Session mismatch' });
@@ -111,13 +110,13 @@ app.post('/api/game/submit', async (req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// leaderboard
+// Leaderboard
 app.get('/api/leaderboard/today', async (_req, res) => {
   try { return res.json({ ok: true, board: await topToday(50) }); }
   catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// winners
+// Winners
 app.get('/api/winners/today', async (_req, res) => {
   try {
     const day = dhakaStamp();
@@ -126,7 +125,7 @@ app.get('/api/winners/today', async (_req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// admin close day
+// Admin: close day
 app.post('/api/admin/close-day', async (req, res) => {
   try {
     const secret = req.query.secret;
