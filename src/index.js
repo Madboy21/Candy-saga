@@ -16,33 +16,51 @@ import Winner from './models/Winner.js';
 import { dhakaStamp, dhakaNow } from './utils/dhaka.js';
 
 const PORT = process.env.PORT || 4000;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'https://candy-crush-zeta-nine.vercel.app';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || 'localhost';
+const COOKIE_DOMAIN = process.env.NODE_ENV === 'production' ? '.vercel.app' : 'localhost';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin';
 
-await mongoose.connect(process.env.MONGODB_URI);
+// MongoDB connection
+try {
+  await mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  console.log('MongoDB connected');
+} catch (err) {
+  console.error('MongoDB connection error:', err);
+  process.exit(1);
+}
 
 const app = express();
 const server = http.createServer(app);
 const io = new IOServer(server, {
-  cors: { origin: CORS_ORIGIN, methods: ['GET', 'POST'], credentials: true }
+  cors: {
+    origin: CORS_ORIGIN,
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
 });
 
+// Middlewares
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
+app.use(cors({
+  origin: CORS_ORIGIN,
+  credentials: true
+}));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 300 }));
 
-// Ensure UID cookie
+// UID cookie middleware
 app.use((req, res, next) => {
   if (!req.cookies?.uid) {
     const uid = uuidv4();
     res.cookie('uid', uid, {
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: 'none',  // cross-origin
       secure: process.env.NODE_ENV === 'production',
       domain: COOKIE_DOMAIN,
       maxAge: 1000 * 60 * 60 * 24 * 365
@@ -52,44 +70,57 @@ app.use((req, res, next) => {
   next();
 });
 
-io.on('connection', (socket) => {});
+// Socket.io
+io.on('connection', (socket) => {
+  console.log('New socket connected:', socket.id);
+});
 
-// Helper: get top leaderboard
+// Helper: top today
 async function topToday(limit = 50) {
   const day = dhakaStamp();
   return Score.find({ day }).sort({ points: -1, createdAt: 1 }).limit(limit).lean();
 }
 
-// Session
+// Routes
 app.post('/api/session', async (req, res) => {
   try {
     const { nickname } = req.body || {};
     const uid = req.cookies.uid;
     let user = await User.findOne({ uid });
     if (!user) user = await User.create({ uid, nickname: nickname || 'Guest' });
-    else if (nickname && nickname.trim()) { user.nickname = nickname.trim().slice(0, 20); await user.save(); }
+    else if (nickname && nickname.trim()) {
+      user.nickname = nickname.trim().slice(0, 20);
+      await user.save();
+    }
     return res.json({ ok: true, user: { uid: user.uid, nickname: user.nickname } });
-  } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-// Start game
 app.post('/api/game/start', async (req, res) => {
   try {
     const uid = req.cookies.uid;
-    const user = await User.findOne({ uid });
-    if (!user) return res.status(400).json({ ok: false, error: 'No session' });
+    if (!uid) return res.status(400).json({ ok: false, error: 'No UID cookie' });
+
+    let user = await User.findOne({ uid });
+    if (!user) user = await User.create({ uid, nickname: 'Guest' });
+
     const token = jwt.sign({ uid }, JWT_SECRET, { expiresIn: '130s' });
     return res.json({ ok: true, token, expiresIn: 130 });
-  } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-// Submit score
 app.post('/api/game/submit', async (req, res) => {
   try {
     const { token, score } = req.body || {};
     if (!token) return res.status(400).json({ ok: false, error: 'Missing token' });
+
     let payload;
-    try { payload = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({ ok: false, error: 'Token invalid/expired' }); }
+    try { payload = jwt.verify(token, JWT_SECRET); }
+    catch { return res.status(401).json({ ok: false, error: 'Token invalid/expired' }); }
 
     const uidFromCookie = req.cookies.uid;
     if (payload.uid !== uidFromCookie) return res.status(403).json({ ok: false, error: 'Session mismatch' });
@@ -106,17 +137,18 @@ app.post('/api/game/submit', async (req, res) => {
 
     const board = await topToday(50);
     io.emit('leaderboard:today', board);
+
     return res.json({ ok: true, saved: true });
-  } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
-// Leaderboard
 app.get('/api/leaderboard/today', async (_req, res) => {
   try { return res.json({ ok: true, board: await topToday(50) }); }
   catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// Winners
 app.get('/api/winners/today', async (_req, res) => {
   try {
     const day = dhakaStamp();
@@ -125,7 +157,6 @@ app.get('/api/winners/today', async (_req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// Admin: close day
 app.post('/api/admin/close-day', async (req, res) => {
   try {
     const secret = req.query.secret;
@@ -138,4 +169,7 @@ app.post('/api/admin/close-day', async (req, res) => {
   } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
 });
 
-server.listen(PORT, () => { console.log(`Server listening on http://localhost:${PORT}`); });
+// Server listen
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on port ${PORT}`);
+});
